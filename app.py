@@ -134,89 +134,150 @@ class TrainingCallback(tf.keras.callbacks.Callback):
 def train_model_ui():
     st.markdown("## Model Training 🚀")
     
-    # Training parameters
-    with st.expander("Training Parameters", expanded=True):
+    # First, validate data directory
+    if not os.path.exists('data'):
+        st.error("❌ Data directory 'data' not found! Please create a 'data' directory and add your dataset.")
+        
+        st.markdown("""
+        ### Expected Data Structure 📁
+        ```
+        data/
+        ├── 00/                  # Subject 1
+        │   ├── 01_palm/        # Gesture class 1
+        │   │   ├── image1.png
+        │   │   ├── image2.png
+        │   │   └── ...
+        │   ├── 02_l/          # Gesture class 2
+        │   └── ...
+        ├── 01/                  # Subject 2
+        └── ...
+        ```
+        """)
+        return
+    
+    try:
+        # Initialize preprocessor to validate data
+        preprocessor = DataPreprocessor('data')
+        stats = preprocessor.validate_data_structure()
+        
+        # Display dataset statistics
+        st.markdown("### Dataset Statistics 📊")
         col1, col2 = st.columns(2)
         with col1:
-            epochs = st.number_input("Number of epochs", min_value=1, value=20)
-            batch_size = st.number_input("Batch size", min_value=1, value=32)
-            validation_split = st.slider("Validation split", 0.1, 0.4, 0.2)
+            st.metric("Total Images", stats['total_images'])
         with col2:
-            learning_rate = st.number_input("Learning rate", 
-                                          min_value=0.0001, 
-                                          max_value=0.1, 
-                                          value=0.001,
-                                          format="%f")
-            early_stopping_patience = st.number_input("Early stopping patience", 
-                                                    min_value=1, 
-                                                    value=5)
-    
-    if st.button("Start Training"):
-        # Create progress placeholder
-        progress_bar = st.progress(0)
-        metrics_placeholder = st.empty()
+            st.metric("Number of Subjects", stats['subjects'])
+            
+        # Display images per class
+        st.markdown("### Images per Class")
+        class_stats = pd.DataFrame.from_dict(
+            stats['images_per_class'], 
+            orient='index', 
+            columns=['Count']
+        )
+        st.bar_chart(class_stats)
         
-        try:
-            # Initialize preprocessor and load data
-            preprocessor = DataPreprocessor('data')
-            X, y = preprocessor.load_and_preprocess()
-            X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(X, y)
+        # If there are any errors, display them and return
+        if stats['errors']:
+            st.error("❌ Dataset Validation Failed:")
+            for error in stats['errors']:
+                st.warning(error)
+            return
             
-            # Create and compile model
-            model = create_model(input_shape=X_train.shape[1:], 
-                               num_classes=len(preprocessor.classes))
-            
-            # Callbacks
-            training_callback = TrainingCallback(metrics_placeholder)
-            callbacks = [
-                training_callback,
-                tf.keras.callbacks.EarlyStopping(
-                    monitor='val_loss',
-                    patience=early_stopping_patience,
-                    restore_best_weights=True
-                ),
-                tf.keras.callbacks.ModelCheckpoint(
-                    'models/best_model.h5',
-                    monitor='val_accuracy',
-                    save_best_only=True,
-                    mode='max'
-                )
-            ]
-            
-            # Train model
-            history = model.fit(
-                X_train, y_train,
-                validation_data=(X_val, y_val),
-                epochs=epochs,
-                batch_size=batch_size,
-                callbacks=callbacks,
-                verbose=0
-            )
-            
-            # Final evaluation
-            test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
-            
-            # Display final results
-            st.success("Training completed successfully! 🎉")
-            st.markdown("### Final Results")
+        # If validation passed, show training parameters
+        with st.expander("Training Parameters", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Test Accuracy", f"{test_accuracy:.2%}")
+                epochs = st.number_input("Number of epochs", min_value=1, value=20)
+                batch_size = st.number_input("Batch size", min_value=1, value=32)
+                validation_split = st.slider("Validation split", 0.1, 0.4, 0.2)
             with col2:
-                st.metric("Test Loss", f"{test_loss:.4f}")
+                learning_rate = st.number_input(
+                    "Learning rate", 
+                    min_value=0.0001, 
+                    max_value=0.1, 
+                    value=0.001,
+                    format="%f"
+                )
+                early_stopping_patience = st.number_input(
+                    "Early stopping patience", 
+                    min_value=1, 
+                    value=5
+                )
+        
+        if st.button("Start Training"):
+            progress_bar = st.progress(0)
+            metrics_placeholder = st.empty()
             
-            # Save training timestamp
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state['last_training'] = timestamp
-            
-        except Exception as e:
-            st.error(f"An error occurred during training: {str(e)}")
-        finally:
-            progress_bar.empty()
+            try:
+                # Load and preprocess data
+                with st.spinner("Loading and preprocessing data..."):
+                    X, y = preprocessor.load_and_preprocess()
+                    X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(X, y)
+                
+                # Create model directory if it doesn't exist
+                os.makedirs('models', exist_ok=True)
+                
+                # Create and compile model
+                model = create_model(
+                    input_shape=X_train.shape[1:], 
+                    num_classes=len(preprocessor.classes)
+                )
+                
+                # Callbacks
+                training_callback = TrainingCallback(metrics_placeholder)
+                callbacks = [
+                    training_callback,
+                    tf.keras.callbacks.EarlyStopping(
+                        monitor='val_loss',
+                        patience=early_stopping_patience,
+                        restore_best_weights=True
+                    ),
+                    tf.keras.callbacks.ModelCheckpoint(
+                        'models/best_model.h5',
+                        monitor='val_accuracy',
+                        save_best_only=True,
+                        mode='max'
+                    )
+                ]
+                
+                # Train model
+                history = model.fit(
+                    X_train, y_train,
+                    validation_data=(X_val, y_val),
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    callbacks=callbacks,
+                    verbose=0
+                )
+                
+                # Final evaluation
+                test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
+                
+                # Display final results
+                st.success("Training completed successfully! 🎉")
+                st.markdown("### Final Results")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Test Accuracy", f"{test_accuracy:.2%}")
+                with col2:
+                    st.metric("Test Loss", f"{test_loss:.4f}")
+                
+                # Save training timestamp
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.session_state['last_training'] = timestamp
+                
+            except Exception as e:
+                st.error(f"An error occurred during training: {str(e)}")
+            finally:
+                progress_bar.empty()
+                
+    except Exception as e:
+        st.error(f"Error initializing preprocessor: {str(e)}")
 
 def main():
     st.title("✨ Hand Gesture Recognition System")
-    st.markdown("### 👋 Prodigy InfoTech ML Internship - Task 3")
+    st.markdown("### 👋 Prodigy InfoTech ML Internship - Task 4")
     
     # Sidebar
     st.sidebar.title("📑 Navigation")
